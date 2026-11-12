@@ -1,0 +1,72 @@
+name: One-time Easterwine guide metadata
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/easterwine-once-metadata-20261112.yml'
+permissions:
+  contents: write
+concurrency:
+  group: easterwine-once-metadata
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Validate and update only search metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, html, json, pathlib, re, subprocess
+          cfg=json.loads("{\"repo\":\"wathwd\",\"sha\":\"2c814fa11fd561a3e3c0e9a40412a994bef5e9dc\",\"title\":\"When All the World Was Young: Study Guide | R. A. Lafferty\",\"description\":\"A guide to R. A. Lafferty’s When All the World Was Young, with chapter studies, character records, chronology, document sequences, and thematic notes.\",\"canonical\":\"https://mumbrumber101-hub.github.io/wathwd/\"}")
+          p=pathlib.Path("index.html")
+          before=p.read_bytes()
+          blob=lambda b: hashlib.sha1(("blob "+str(len(b))+"\0").encode()+b).hexdigest()
+          assert blob(before)==cfg["sha"], "Source changed: stop without mutation"
+          heads=list(re.finditer(rb"<head\b[^>]*>.*?</head\s*>", before, re.I|re.S))
+          assert len(heads)==1, "Expected exactly one head"
+          m=heads[0]
+          head=m.group()
+          assert len(re.findall(rb"<title\b", head, re.I))==1
+          assert not re.search(rb'<meta\b[^>]*(?:name|property)\s*=\s*["\x27](?:description|og:|twitter:)', head, re.I)
+          assert not re.search(rb'<link\b[^>]*rel\s*=\s*["\x27]canonical', head, re.I)
+          esc=lambda s: html.escape(s,quote=True)
+          t=esc(cfg["title"])
+          d=esc(cfg["description"])
+          u=esc(cfg["canonical"])
+          tags=[
+          '<meta name="description" content="'+d+'">',
+          '<link rel="canonical" href="'+u+'">',
+          '<meta property="og:title" content="'+t+'">',
+          '<meta property="og:description" content="'+d+'">',
+          '<meta property="og:url" content="'+u+'">',
+          '<meta property="og:site_name" content="Arrive at Easterwine">',
+          '<meta name="twitter:card" content="summary">',
+          '<meta name="twitter:title" content="'+t+'">',
+          '<meta name="twitter:description" content="'+d+'">'
+          ]
+          new_head,n=re.subn(rb"<title\b[^>]*>.*?</title\s*>",lambda _:("<title>"+t+"</title>").encode(),head,flags=re.I|re.S)
+          assert n==1
+          new_head,n=re.subn(rb"</head\s*>",lambda _ :("\n"+"\n".join(tags)+"\n</head>").encode(),new_head,flags=re.I)
+          assert n==1
+          after=before[:m.start()]+new_head+before[m.end():]
+          after_m=re.search(rb"<head\b[^>]*>.*?</head\s*>",after,re.I|re.S)
+          assert before[:m.start()]==after[:after_m.start()]
+          assert before[m.end():]==after[after_m.end():], "Body changed"
+          old_body_hash=hashlib.sha256(before[m.end():]).hexdigest()
+          assert old_body_hash==hashlib.sha256(after[after_m.end():]).hexdigest()
+          p.write_bytes(after)
+          assert blob(p.read_bytes())==blob(after)
+          print(json.dumps({"repo":cfg["repo"],"before_blob":blob(before),"after_blob":blob(after),"body_sha256":old_body_hash,"body_bytes_preserved":True,"before_bytes":len(before),"after_bytes":len(after),"title":cfg["title"],"description":cfg["description"],"canonical":cfg["canonical"]},ensure_ascii=False))
+          subprocess.run(["git","add","--","index.html"],check=True)
+          changed=subprocess.check_output(["git","diff","--cached","--name-only"]).decode().splitlines()
+          assert changed==["index.html"], changed
+          subprocess.run(["git","-c","user.name=github-actions[bot]","-c","user.email=41898282+github-actions[bot]@users.noreply.github.com","commit","-m","Add accurate search and sharing metadata to study guide"],check=True)
+          subprocess.run(["git","push","origin","HEAD:main"],check=True)
+          
+          PY
